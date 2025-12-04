@@ -1,0 +1,189 @@
+import psycopg2
+import csv
+
+host = "localhost"
+user = "postgres"
+password = "12345678"
+db_name = "postgres"
+
+def connect():
+    return psycopg2.connect(host=host, user=user, password=password, database=db_name)
+
+
+def create_table():
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS phonebook (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL,
+                    phone VARCHAR(20) NOT NULL
+                );
+            """)
+
+            print("Таблица создана.")
+
+
+
+def create_functions_and_procedures():
+    with connect() as conn:
+        with conn.cursor() as cur:
+
+           
+            cur.execute("""
+            CREATE OR REPLACE FUNCTION search_by_pattern(pattern VARCHAR)
+            RETURNS TABLE(name VARCHAR, phone VARCHAR)
+            AS $$
+            BEGIN
+                RETURN QUERY
+                SELECT name, phone FROM phonebook
+                WHERE name ILIKE '%' || pattern || '%'
+                   OR phone ILIKE '%' || pattern || '%';
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+
+
+            cur.execute("""
+            CREATE OR REPLACE PROCEDURE add_or_update_user(pname VARCHAR, pphone VARCHAR)
+            AS $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM phonebook WHERE name = pname) THEN
+                    UPDATE phonebook SET phone = pphone WHERE name = pname;
+                ELSE
+                    INSERT INTO phonebook(name, phone) VALUES (pname, pphone);
+                END IF;
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+
+           
+            cur.execute("""
+            CREATE OR REPLACE PROCEDURE add_many_users(names TEXT[], phones TEXT[])
+            AS $$
+            DECLARE
+                i INT := 1;
+                invalid TEXT[] := ARRAY[]::TEXT[];
+            BEGIN
+                WHILE i <= array_length(names, 1) LOOP
+
+                    IF phones[i] !~ '^[0-9\\+\\-]+$' THEN
+                        invalid := array_append(invalid, names[i] || ' - ' || phones[i]);
+                    ELSE
+                        CALL add_or_update_user(names[i], phones[i]);
+                    END IF;
+
+                    i := i + 1;
+                END LOOP;
+
+                RAISE NOTICE 'INVALID DATA: %', invalid;
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+
+       
+            cur.execute("""
+            CREATE OR REPLACE FUNCTION get_paginated(limit_num INT, offset_num INT)
+            RETURNS TABLE(name VARCHAR, phone VARCHAR)
+            AS $$
+            BEGIN
+                RETURN QUERY
+                SELECT name, phone FROM phonebook
+                ORDER BY id
+                LIMIT limit_num OFFSET offset_num;
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+
+           
+            cur.execute("""
+            CREATE OR REPLACE PROCEDURE delete_user(value VARCHAR)
+            AS $$
+            BEGIN
+                DELETE FROM phonebook
+                WHERE name = value OR phone = value;
+            END;
+            $$ LANGUAGE plpgsql;
+            """)
+
+        print("Все функции и процедуры созданы.")
+
+
+
+
+def insert_from_csv(filename='phonebook.csv'):
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    for row in reader:
+                        cur.execute("CALL add_or_update_user(%s, %s);", (row['name'], row['phone']))
+        print("Данные загружены.")
+    except Exception as e:
+        print("Ошибка:", e)
+
+def insert_from_console():
+    name = input("Имя: ")
+    phone = input("Телефон: ")
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("CALL add_or_update_user(%s, %s);", (name, phone))
+    print("Готово.")
+
+def search_data():
+    pattern = input("Введите шаблон поиска: ")
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM search_by_pattern(%s);", (pattern,))
+            rows = cur.fetchall()
+            for r in rows:
+                print(r)
+
+def pagination():
+    limit = int(input("Лимит: "))
+    offset = int(input("Смещение: "))
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM get_paginated(%s, %s);", (limit, offset))
+            for row in cur.fetchall():
+                print(row)
+
+def delete_data():
+    value = input("Кого удалить (имя или телефон)? ")
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("CALL delete_user(%s);", (value,))
+    print("Удалено.")
+
+
+
+def main():
+    create_table()
+    create_functions_and_procedures()
+
+    while True:
+        print("""
+1 — Вставить из CSV
+2 — Добавить вручную
+3 — Поиск по шаблону (через функцию)
+4 — Пагинация
+5 — Удалить (процедура)
+0 — Выход
+""")
+
+        c = input("Выберите действие: ")
+
+        if c == "1": insert_from_csv()
+        elif c == "2": insert_from_console()
+        elif c == "3": search_data()
+        elif c == "4": pagination()
+        elif c == "5": delete_data()
+        elif c == "0":
+            print("Выход...")
+            break
+        else:
+            print("Ошибка ввода!")
+
+if __name__ == "__main__":
+    main()
